@@ -202,24 +202,45 @@ function escapeXml(str) {
     .replace(/'/g, "&apos;");
 }
 
-// Synthesise a single chunk via StreamElements; resolves with MP3 Blob
-async function edgeTTSChunk(voiceName, text) {
-  const url = new URL(STREAMELEMENTS_TTS_URL);
-  url.searchParams.set("voice", getStreamElementsVoice(voiceName));
-  url.searchParams.set("text", text);
+// Voice → Google Translate language code mapping
+const EDGE_GTTS_LANG_MAP = {
+  "en-GB-SoniaNeural":   "en-GB",
+  "en-GB-RyanNeural":    "en-GB",
+  "en-US-JennyNeural":   "en-US",
+  "en-US-GuyNeural":     "en-US",
+  "en-AU-NatashaNeural": "en-AU",
+  "en-AU-WilliamNeural": "en-AU",
+  "en-US-AriaNeural":    "en-US",
+};
 
-  const res = await fetch(url.toString());
-  if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText);
-    throw new Error(`StreamElements API ${res.status}: ${msg || res.statusText}`);
+// Synthesise via Google Translate TTS (free, no auth, ~200 char limit per request)
+// For longer text, we split into small chunks and concatenate the blobs
+async function edgeTTSChunkViaGoogle(voiceName, text) {
+  const lang = EDGE_GTTS_LANG_MAP[voiceName] || "en-GB";
+  // Split text into ~180 char sentence-aware chunks for Google's limit
+  const miniChunks = [];
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  let current = "";
+  for (const s of sentences) {
+    if ((current + s).length > 180) {
+      if (current) miniChunks.push(current.trim());
+      current = s;
+    } else {
+      current += s;
+    }
+  }
+  if (current.trim()) miniChunks.push(current.trim());
+
+  const audioBlobs = [];
+  for (const chunk of miniChunks) {
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=${encodeURIComponent(lang)}&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Google TTS ${res.status}`);
+    audioBlobs.push(await res.blob());
   }
 
-  const blob = await res.blob();
-  if (!blob.size) {
-    throw new Error("StreamElements returned empty audio");
-  }
-
-  return blob;
+  // Concatenate all blobs
+  return new Blob(audioBlobs, { type: "audio/mpeg" });
 }
 
 // Synthesise a single chunk via Edge TTS WebSocket; resolves with MP3 Blob
@@ -305,31 +326,30 @@ async function speakWithEdgeTTS(text, voiceName, speed) {
     });
 
     try {
-      const blob = await edgeTTSChunk(voice, chunks[i]);
+      // Try Bing WebSocket first (best quality)
+      const blob = await edgeTTSChunkViaBing(voice, chunks[i], spd);
       if (isStopped) return;
-
-      await playAudioBlob(blob, spd);
-
+      await playAudioBlob(blob);
       while (isPaused && !isStopped) { await sleep(100); }
-    } catch (streamErr) {
+    } catch (bingErr) {
       try {
-        const blob = await edgeTTSChunkViaBing(voice, chunks[i], spd);
+        // Fallback: Google Translate TTS (free, no auth)
+        const blob = await edgeTTSChunkViaGoogle(voice, chunks[i]);
         if (isStopped) return;
-
-        await playAudioBlob(blob);
-
+        await playAudioBlob(blob, spd);
         while (isPaused && !isStopped) { await sleep(100); }
-      } catch (bingErr) {
+      } catch (googleErr) {
+        // Last resort: Browser Local TTS
         if (!isStopped) {
-          reportState("playing", "Network TTS unavailable, switching to Browser TTS…", {
+          reportState("playing", "Network TTS unavailable, using Browser TTS…", {
             chunk: i + 1,
             totalChunks: chunks.length,
             engine: "local",
           });
           speakWithLocalTTS(chunks.slice(i).join(" "), null, spd);
         }
+        return;
       }
-      return;
     }
   }
 
