@@ -321,7 +321,7 @@ async function speakWithEdgeTTS(text, voiceName, speed) {
     while (isPaused && !isStopped) { await sleep(100); }
     if (isStopped) return;
 
-    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+    reportState("playing", `Fetching audio… ${i + 1}/${chunks.length}`, {
       chunk: i + 1, totalChunks: chunks.length, engine: "edge",
     });
 
@@ -329,6 +329,9 @@ async function speakWithEdgeTTS(text, voiceName, speed) {
       // Try Bing WebSocket first (best quality)
       const blob = await edgeTTSChunkViaBing(voice, chunks[i], spd);
       if (isStopped) return;
+      reportState("playing", `Playing… ${i + 1}/${chunks.length}`, {
+        chunk: i + 1, totalChunks: chunks.length, engine: "edge",
+      });
       await playAudioBlob(blob);
       while (isPaused && !isStopped) { await sleep(100); }
     } catch (bingErr) {
@@ -374,7 +377,7 @@ async function speakWithOpenAI(text, voice, speed, apiKey) {
     while (isPaused && !isStopped) { await sleep(100); }
     if (isStopped) return;
 
-    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+    reportState("playing", `Fetching audio… ${i + 1}/${chunks.length}`, {
       chunk: i + 1, totalChunks: chunks.length, engine: "openai",
     });
 
@@ -400,6 +403,10 @@ async function speakWithOpenAI(text, voice, speed, apiKey) {
 
       const blob = await res.blob();
       if (isStopped) return;
+
+      reportState("playing", `Playing… ${i + 1}/${chunks.length}`, {
+        chunk: i + 1, totalChunks: chunks.length, engine: "openai",
+      });
 
       await playAudioBlob(blob);
 
@@ -429,7 +436,7 @@ async function speakWithElevenLabs(text, voice, apiKey) {
     while (isPaused && !isStopped) { await sleep(100); }
     if (isStopped) return;
 
-    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+    reportState("playing", `Fetching audio… ${i + 1}/${chunks.length}`, {
       chunk: i + 1, totalChunks: chunks.length, engine: "elevenlabs",
     });
 
@@ -457,6 +464,10 @@ async function speakWithElevenLabs(text, voice, apiKey) {
 
       const blob = await res.blob();
       if (isStopped) return;
+
+      reportState("playing", `Playing… ${i + 1}/${chunks.length}`, {
+        chunk: i + 1, totalChunks: chunks.length, engine: "elevenlabs",
+      });
 
       await playAudioBlob(blob);
 

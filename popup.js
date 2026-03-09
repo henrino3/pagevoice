@@ -204,6 +204,12 @@ backBtn.addEventListener("click", () => {
 
 engineRadios.forEach((radio) => {
   radio.addEventListener("change", () => {
+    // Stop any active playback when switching engines
+    if (uiState === "playing" || uiState === "paused") {
+      chrome.runtime.sendMessage({ target: "background", type: "stop" });
+      setUIState("stopped");
+      setStatus("");
+    }
     currentEngine = radio.value;
     chrome.storage.sync.set({ engine: currentEngine });
     updateEngineUI(currentEngine);
