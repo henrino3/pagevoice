@@ -1,100 +1,159 @@
-// Background service worker for TTS
-let currentAudio = null;
+/**
+ * background.js — PageVoice Service Worker
+ *
+ * Responsibilities:
+ *  1. Maintain authoritative playback state (persisted in chrome.storage.session
+ *     so it survives service-worker restarts within the same browser session).
+ *  2. Manage the offscreen document lifecycle.
+ *  3. Route messages between popup.js ↔ offscreen.js.
+ *
+ * Message protocol (all messages carry a `target` field):
+ *   From popup     → background  (target: 'background'): getState | play | pause | resume | stop
+ *   From offscreen → background  (target: 'background'): stateUpdate
+ *   From background → offscreen  (target: 'offscreen'):  play | pause | resume | stop | getState
+ *   From background → popup      (target: 'popup'):      stateUpdate
+ */
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "speak" && request.mode === "elevenlabs") {
-    speakWithElevenLabs(request.text, request.apiKey, request.voice);
-  } else if (request.action === "stop") {
-    stopAudio();
+const OFFSCREEN_URL = chrome.runtime.getURL("offscreen.html");
+
+// ─── State ────────────────────────────────────────────────────────────────────
+
+/** In-memory snapshot; authoritative copy lives in chrome.storage.session */
+let _state = { state: "stopped", statusText: "" };
+
+async function loadState() {
+  const stored = await chrome.storage.session.get("playbackState").catch(() => ({}));
+  if (stored.playbackState) _state = stored.playbackState;
+  return _state;
+}
+
+async function saveState(patch) {
+  _state = { ..._state, ...patch };
+  await chrome.storage.session.set({ playbackState: _state }).catch(() => {});
+  return _state;
+}
+
+// ─── Offscreen Document Helpers ───────────────────────────────────────────────
+
+async function hasOffscreenDocument() {
+  const contexts = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [OFFSCREEN_URL],
+  }).catch(() => []);
+  return contexts.length > 0;
+}
+
+async function ensureOffscreenDocument() {
+  if (await hasOffscreenDocument()) return false; // already exists
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN_URL,
+    reasons: ["AUDIO_PLAYBACK"],
+    justification: "Persistent TTS audio playback that survives popup close",
+  });
+  // Give the document a moment to load its script before we send messages
+  await sleep(150);
+  return true; // freshly created
+}
+
+async function closeOffscreenDocument() {
+  if (await hasOffscreenDocument()) {
+    await chrome.offscreen.closeDocument().catch(() => {});
   }
-});
+}
 
-async function speakWithElevenLabs(text, apiKey, voiceId) {
-  try {
-    const chunks = splitTextIntoChunks(text, 2500);
-    
-    for (let i = 0; i < chunks.length; i++) {
-      notifyPopup({ status: `Reading chunk ${i + 1}/${chunks.length}...` });
+// ─── Message Router ───────────────────────────────────────────────────────────
 
-      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: "POST",
-        headers: {
-          "Accept": "audio/mpeg",
-          "Content-Type": "application/json",
-          "xi-api-key": apiKey
-        },
-        body: JSON.stringify({
-          text: chunks[i],
-          model_id: "eleven_monolingual_v1",
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75
-          }
-        })
-      });
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.target !== "background") return false;
 
-      if (!response.ok) {
-        throw new Error(`ElevenLabs API error: ${response.statusText}`);
+  (async () => {
+    switch (message.type) {
+
+      // ── Popup requests current state ──────────────────────────────────────
+      case "getState": {
+        const st = await loadState();
+
+        // If state says playing/paused but no offscreen doc exists, it's stale
+        if (st.state !== "stopped" && !(await hasOffscreenDocument())) {
+          await saveState({ state: "stopped", statusText: "" });
+        }
+
+        sendResponse({ ok: true, payload: await loadState() });
+        break;
       }
 
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      
-      await playAudio(audioUrl);
+      // ── Popup requests playback start ─────────────────────────────────────
+      case "play": {
+        await saveState({ state: "playing", statusText: "Starting…" });
+        await ensureOffscreenDocument();
+        // Forward full play payload to offscreen
+        chrome.runtime.sendMessage({
+          target: "offscreen",
+          type: "play",
+          payload: message.payload,
+        }).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+
+      // ── Popup requests pause ──────────────────────────────────────────────
+      case "pause": {
+        await saveState({ state: "paused", statusText: "Paused" });
+        chrome.runtime.sendMessage({ target: "offscreen", type: "pause" }).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+
+      // ── Popup requests resume ─────────────────────────────────────────────
+      case "resume": {
+        await saveState({ state: "playing", statusText: _state.statusText || "Resuming…" });
+        chrome.runtime.sendMessage({ target: "offscreen", type: "resume" }).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+
+      // ── Popup requests stop ───────────────────────────────────────────────
+      case "stop": {
+        await saveState({ state: "stopped", statusText: "" });
+        chrome.runtime.sendMessage({ target: "offscreen", type: "stop" }).catch(() => {});
+        // Small delay to let offscreen handle the stop before we tear it down
+        await sleep(200);
+        await closeOffscreenDocument();
+        sendResponse({ ok: true });
+        break;
+      }
+
+      // ── Offscreen reports state change ────────────────────────────────────
+      case "stateUpdate": {
+        const updated = await saveState(message.payload);
+
+        // Auto-close offscreen when playback finishes naturally
+        if (updated.state === "stopped") {
+          await sleep(100);
+          await closeOffscreenDocument();
+        }
+
+        // Forward to popup if it happens to be open
+        chrome.runtime.sendMessage({
+          target: "popup",
+          type: "stateUpdate",
+          payload: updated,
+        }).catch(() => {});
+
+        sendResponse({ ok: true });
+        break;
+      }
+
+      default:
+        sendResponse({ ok: false, error: "Unknown message type" });
     }
+  })();
 
-    notifyPopup({ state: "ended", status: "Finished reading" });
-  } catch (error) {
-    console.error("ElevenLabs error:", error);
-    notifyPopup({ state: "error", status: `Error: ${error.message}` });
-  }
-}
+  return true; // keep channel open for async sendResponse
+});
 
-function playAudio(url) {
-  return new Promise((resolve, reject) => {
-    currentAudio = new Audio(url);
-    
-    currentAudio.onended = () => {
-      URL.revokeObjectURL(url);
-      resolve();
-    };
-    
-    currentAudio.onerror = (error) => {
-      URL.revokeObjectURL(url);
-      reject(error);
-    };
-    
-    currentAudio.play();
-  });
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function stopAudio() {
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio = null;
-  }
-}
-
-function splitTextIntoChunks(text, maxLength) {
-  const chunks = [];
-  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-  
-  let currentChunk = "";
-  
-  for (const sentence of sentences) {
-    if ((currentChunk + sentence).length > maxLength) {
-      if (currentChunk) chunks.push(currentChunk.trim());
-      currentChunk = sentence;
-    } else {
-      currentChunk += sentence;
-    }
-  }
-  
-  if (currentChunk) chunks.push(currentChunk.trim());
-  
-  return chunks;
-}
-
-function notifyPopup(message) {
-  chrome.runtime.sendMessage(message).catch(() => {});
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
