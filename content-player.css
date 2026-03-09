@@ -1,0 +1,137 @@
+/* ═══════════════════════════════════════════════════════════════
+   PageVoice — Floating Mini-Player
+   Injected into the host page; all selectors are scoped to
+   #__pagevoice_player__ to avoid style leakage.
+   ═══════════════════════════════════════════════════════════════ */
+
+#__pagevoice_player__ {
+  all: initial; /* reset inherited styles from host page */
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 2147483647; /* top of every stacking context */
+  width: 210px;
+  background: rgba(15, 15, 15, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  color: #e0e0e0;
+  user-select: none;
+  cursor: default;
+  transition: box-shadow 0.2s, opacity 0.2s;
+  overflow: hidden;
+}
+
+#__pagevoice_player__:hover {
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* Drag handle — subtle top bar */
+#__pagevoice_player__ .pv-drag-handle {
+  all: unset;
+  display: block;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  cursor: grab;
+  border-radius: 12px 12px 0 0;
+}
+
+#__pagevoice_player__ .pv-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Body */
+#__pagevoice_player__ .pv-body {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: grab;
+}
+
+#__pagevoice_player__ .pv-body:active {
+  cursor: grabbing;
+}
+
+/* Progress text */
+#__pagevoice_player__ .pv-progress {
+  all: unset;
+  flex: 1;
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+  display: block;
+}
+
+/* Playing state — slightly brighter progress */
+#__pagevoice_player__.pv-playing .pv-progress {
+  color: #aaa;
+}
+
+/* Controls */
+#__pagevoice_player__ .pv-controls {
+  all: unset;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* Buttons */
+#__pagevoice_player__ .pv-btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #bbb;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+#__pagevoice_player__ .pv-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+/* Play/pause gets a subtle blue accent */
+#__pagevoice_player__ .pv-play:hover {
+  background: rgba(0, 102, 255, 0.3);
+  border-color: rgba(0, 102, 255, 0.5);
+  color: #fff;
+}
+
+/* Stop button */
+#__pagevoice_player__ .pv-stop:hover {
+  background: rgba(220, 60, 60, 0.25);
+  border-color: rgba(220, 60, 60, 0.4);
+  color: #ff8080;
+}
+
+/* Close button */
+#__pagevoice_player__ .pv-close {
+  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: none;
+  color: #555;
+}
+
+#__pagevoice_player__ .pv-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ccc;
+}

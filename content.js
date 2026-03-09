@@ -1,53 +1,228 @@
-// Extract article text from the page
-function extractArticleText() {
-  // Get all paragraph text first (most reliable)
-  let paragraphs = Array.from(document.querySelectorAll("p"))
-    .map(p => p.innerText.trim())
-    .filter(text => text.length > 30);
+/**
+ * content.js — PageVoice Content Script (v2)
+ *
+ * Responsibilities:
+ *  1. Extract article text and page title on request.
+ *  2. Inject / update / remove the floating mini-player.
+ */
+
+// ─── Article Extraction ───────────────────────────────────────────────────────
+
+function extractArticleData() {
+  // Prefer visible paragraphs (most reliable signal of article content)
+  const paragraphs = Array.from(document.querySelectorAll("p"))
+    .map((p) => p.innerText.trim())
+    .filter((t) => t.length > 30);
+
+  let text = null;
 
   if (paragraphs.length >= 3) {
-    return paragraphs.join("\n\n");
-  }
+    text = paragraphs.join("\n\n");
+  } else {
+    const selectors = [
+      "article",
+      '[role="article"]',
+      ".article-content",
+      ".post-content",
+      ".entry-content",
+      ".post-body",
+      ".content-body",
+      "main",
+    ];
 
-  // Try article/main selectors
-  const selectors = [
-    "article",
-    "[role=\"article\"]",
-    ".article-content",
-    ".post-content", 
-    ".entry-content",
-    ".post",
-    ".content",
-    "main"
-  ];
-
-  for (const selector of selectors) {
-    const element = document.querySelector(selector);
-    if (element) {
-      const text = element.innerText.trim();
-      if (text.length > 200) {
-        return text;
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const t = el.innerText.trim();
+        if (t.length > 200) { text = t; break; }
       }
+    }
+
+    if (!text) {
+      const body = document.body.innerText;
+      if (body.length > 200) text = body.substring(0, 50000);
     }
   }
 
-  // Last resort: get body text
-  const bodyText = document.body.innerText;
-  if (bodyText.length > 200) {
-    return bodyText.substring(0, 50000); // Limit to 50k chars
+  // Derive a clean title: prefer og:title, then h1, then document.title
+  let title = "";
+  const ogTitle = document.querySelector('meta[property="og:title"]');
+  if (ogTitle) {
+    title = ogTitle.content.trim();
+  } else {
+    const h1 = document.querySelector("article h1, main h1, h1");
+    title = h1 ? h1.innerText.trim() : document.title.trim();
   }
 
-  return null;
+  return { text, title };
 }
 
-// Listen for messages from popup
+// ─── Message Listener ─────────────────────────────────────────────────────────
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "getArticleText") {
-    const text = extractArticleText();
-    console.log("Extracted text length:", text ? text.length : 0);
-    sendResponse({ text });
+  // Article data request from popup
+  if (request.action === "getArticleData") {
+    const data = extractArticleData();
+    sendResponse(data);
+    return true;
   }
-  return true; // Keep channel open for async response
+
+  // Legacy support (in case something still sends getArticleText)
+  if (request.action === "getArticleText") {
+    const { text } = extractArticleData();
+    sendResponse({ text });
+    return true;
+  }
+
+  // Floating player state update from background
+  if (request.target === "content" && request.type === "playerUpdate") {
+    handlePlayerUpdate(request.payload);
+    return true;
+  }
 });
 
-console.log("Article Reader content script loaded");
+// ─── Floating Mini-Player ─────────────────────────────────────────────────────
+
+let playerEl      = null;
+let isDragging    = false;
+let dragOffsetX   = 0;
+let dragOffsetY   = 0;
+let playerVisible = false;
+
+const PLAYER_ID = "__pagevoice_player__";
+
+function handlePlayerUpdate({ state, chunk, totalChunks }) {
+  if (state === "stopped") {
+    removePlayer();
+    return;
+  }
+  if (!playerVisible) {
+    injectPlayer();
+  }
+  updatePlayer(state, chunk, totalChunks);
+}
+
+function injectPlayer() {
+  // Avoid duplicates
+  if (document.getElementById(PLAYER_ID)) {
+    playerEl      = document.getElementById(PLAYER_ID);
+    playerVisible = true;
+    return;
+  }
+
+  playerEl = document.createElement("div");
+  playerEl.id = PLAYER_ID;
+  playerEl.innerHTML = `
+    <div class="pv-drag-handle" title="Drag to move"></div>
+    <div class="pv-body">
+      <div class="pv-progress"></div>
+      <div class="pv-controls">
+        <button class="pv-btn pv-play" title="Play/Pause">▶</button>
+        <button class="pv-btn pv-stop" title="Stop">⏹</button>
+        <button class="pv-btn pv-close" title="Close">✕</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(playerEl);
+  playerVisible = true;
+
+  // ── Event Listeners ──────────────────────────────────────────────────────
+  playerEl.querySelector(".pv-play").addEventListener("click", (e) => {
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ target: "background", type: "pause" });
+  });
+
+  playerEl.querySelector(".pv-stop").addEventListener("click", (e) => {
+    e.stopPropagation();
+    chrome.runtime.sendMessage({ target: "background", type: "stop" });
+    removePlayer();
+  });
+
+  playerEl.querySelector(".pv-close").addEventListener("click", (e) => {
+    e.stopPropagation();
+    removePlayer();
+  });
+
+  // Draggable
+  playerEl.addEventListener("mousedown", onDragStart);
+  document.addEventListener("mousemove", onDragMove);
+  document.addEventListener("mouseup",   onDragEnd);
+}
+
+function updatePlayer(state, chunk, totalChunks) {
+  if (!playerEl) return;
+
+  const playBtn    = playerEl.querySelector(".pv-play");
+  const progressEl = playerEl.querySelector(".pv-progress");
+
+  if (state === "paused") {
+    playBtn.textContent = "▶";
+    playBtn.title       = "Resume";
+    playerEl.classList.add("pv-paused");
+    playerEl.classList.remove("pv-playing");
+    // override click to send resume
+    playBtn.onclick = (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ target: "background", type: "resume" });
+    };
+  } else {
+    playBtn.textContent = "⏸";
+    playBtn.title       = "Pause";
+    playerEl.classList.add("pv-playing");
+    playerEl.classList.remove("pv-paused");
+    playBtn.onclick = (e) => {
+      e.stopPropagation();
+      chrome.runtime.sendMessage({ target: "background", type: "pause" });
+    };
+  }
+
+  if (totalChunks > 1) {
+    progressEl.textContent = `${chunk} / ${totalChunks}`;
+  } else {
+    progressEl.textContent = state === "playing" ? "▶ Reading…" : "⏸ Paused";
+  }
+}
+
+function removePlayer() {
+  if (playerEl) {
+    document.removeEventListener("mousemove", onDragMove);
+    document.removeEventListener("mouseup",   onDragEnd);
+    playerEl.remove();
+    playerEl      = null;
+    playerVisible = false;
+  }
+}
+
+// ─── Drag Logic ───────────────────────────────────────────────────────────────
+
+function onDragStart(e) {
+  // Only drag from the handle or the player body (not buttons)
+  if (e.target.classList.contains("pv-btn")) return;
+  isDragging  = true;
+  const rect  = playerEl.getBoundingClientRect();
+  dragOffsetX = e.clientX - rect.left;
+  dragOffsetY = e.clientY - rect.top;
+  playerEl.style.transition = "none";
+  e.preventDefault();
+}
+
+function onDragMove(e) {
+  if (!isDragging || !playerEl) return;
+  const x = e.clientX - dragOffsetX;
+  const y = e.clientY - dragOffsetY;
+
+  // Keep within viewport
+  const maxX = window.innerWidth  - playerEl.offsetWidth;
+  const maxY = window.innerHeight - playerEl.offsetHeight;
+
+  playerEl.style.left   = Math.max(0, Math.min(x, maxX)) + "px";
+  playerEl.style.top    = Math.max(0, Math.min(y, maxY)) + "px";
+  playerEl.style.right  = "auto";
+  playerEl.style.bottom = "auto";
+}
+
+function onDragEnd() {
+  isDragging = false;
+  if (playerEl) playerEl.style.transition = "";
+}

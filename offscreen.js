@@ -1,219 +1,453 @@
 /**
- * offscreen.js — PageVoice Offscreen Document
+ * offscreen.js — PageVoice Offscreen Document (v2)
  *
- * Runs as a persistent hidden document (chrome.offscreen API).
- * Handles all audio playback so it continues even when the popup is closed.
- * Communicates with background.js via chrome.runtime.sendMessage.
+ * Handles ALL audio playback:
+ *   - Edge TTS  (free, WebSocket, default)
+ *   - OpenAI TTS (API key, REST)
+ *   - ElevenLabs  (API key, REST)
+ *   - Browser Local TTS (SpeechSynthesis)
  *
- * Message protocol (all messages have a `target` field):
- *   Incoming  (target: 'offscreen'): play | pause | resume | stop | getState
- *   Outgoing  (target: 'background'): stateUpdate { state, statusText }
+ * Lives as a persistent hidden HTML page so audio continues when popup closes.
+ * Communicates exclusively with background.js via chrome.runtime.sendMessage.
  */
 
-const DEFAULT_API_KEY = "sk_1762efa9c9a67a671fd67ab38648f0512634c43c126a44f3";
+const DEFAULT_ELEVENLABS_KEY = "sk_1762efa9c9a67a671fd67ab38648f0512634c43c126a44f3";
 
-let currentAudio = null;
-let isStopped = false;
-let isPaused = false;
-let currentState = "stopped";
-let currentStatusText = "";
+// ─── Playback state ───────────────────────────────────────────────────────────
 
-// ─── Message Router ──────────────────────────────────────────────────────────
+let currentAudio    = null;
+let isStopped       = false;
+let isPaused        = false;
+let currentState    = "stopped";
+let currentStatus   = "";
+
+// ─── Message Router ───────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.target !== "offscreen") return false;
 
   (async () => {
     switch (message.type) {
+
       case "play": {
         isStopped = false;
-        isPaused = false;
-        const { text, mode, apiKey, voice, speed } = message.payload;
-        // Don't await — playback runs asynchronously, state updates are pushed
-        if (mode === "elevenlabs") {
-          speakWithElevenLabs(text, apiKey, voice);
-        } else {
-          speakWithLocalTTS(text, voice, speed);
+        isPaused  = false;
+        const { text, engine, voice, speed, apiKey } = message.payload;
+
+        // Fire-and-forget — state updates are pushed to background
+        switch (engine) {
+          case "edge":       speakWithEdgeTTS(text, voice, speed);       break;
+          case "openai":     speakWithOpenAI(text, voice, speed, apiKey); break;
+          case "elevenlabs": speakWithElevenLabs(text, voice, apiKey);    break;
+          default:           speakWithLocalTTS(text, voice, speed);       break;
         }
         sendResponse({ ok: true });
         break;
       }
 
-      case "pause":
+      case "pause": {
         isPaused = true;
-        if (currentAudio) {
-          currentAudio.pause();
-        } else if (typeof speechSynthesis !== "undefined") {
-          speechSynthesis.pause();
-        }
+        if (currentAudio) { currentAudio.pause(); }
+        else if (typeof speechSynthesis !== "undefined") { speechSynthesis.pause(); }
         reportState("paused", "Paused");
         sendResponse({ ok: true });
         break;
+      }
 
-      case "resume":
+      case "resume": {
         isPaused = false;
-        if (currentAudio) {
-          currentAudio.play().catch(() => {});
-        } else if (typeof speechSynthesis !== "undefined") {
-          speechSynthesis.resume();
-        }
-        reportState("playing", currentStatusText);
+        if (currentAudio) { currentAudio.play().catch(() => {}); }
+        else if (typeof speechSynthesis !== "undefined") { speechSynthesis.resume(); }
+        reportState("playing", currentStatus);
         sendResponse({ ok: true });
         break;
+      }
 
-      case "stop":
+      case "stop": {
         isStopped = true;
-        if (currentAudio) {
-          currentAudio.pause();
-          currentAudio = null;
-        }
-        if (typeof speechSynthesis !== "undefined") {
-          speechSynthesis.cancel();
-        }
-        // background will close this document after receiving the stop ack
+        if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+        if (typeof speechSynthesis !== "undefined") { speechSynthesis.cancel(); }
         sendResponse({ ok: true });
         break;
-
-      case "getState":
-        sendResponse({ ok: true, state: currentState, statusText: currentStatusText });
-        break;
+      }
 
       default:
         sendResponse({ ok: false, error: "Unknown message type" });
     }
   })();
 
-  return true; // keep channel open for async sendResponse
+  return true;
 });
 
 // ─── State Reporter ───────────────────────────────────────────────────────────
 
-function reportState(state, statusText) {
-  currentState = state;
-  currentStatusText = statusText;
+function reportState(state, statusText, extra = {}) {
+  currentState  = state;
+  currentStatus = statusText;
   chrome.runtime.sendMessage({
     target: "background",
-    type: "stateUpdate",
-    payload: { state, statusText },
+    type:   "stateUpdate",
+    payload: { state, statusText, ...extra },
   }).catch(() => {});
 }
 
-// ─── ElevenLabs Playback ──────────────────────────────────────────────────────
+// ─── Shared audio player ──────────────────────────────────────────────────────
 
-async function speakWithElevenLabs(text, apiKey, voice) {
-  const effectiveKey = (apiKey && apiKey.trim()) || DEFAULT_API_KEY;
-  const chunks = splitText(text, 2500);
+function playAudioBlob(blob) {
+  return new Promise((resolve, reject) => {
+    if (isStopped) { resolve(); return; }
+    const url   = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    currentAudio = audio;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      resolve();
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+      reject(new Error("Audio playback error"));
+    };
+    audio.play().catch(reject);
+  });
+}
+
+// ─── Edge TTS (WebSocket) ─────────────────────────────────────────────────────
+//
+// Protocol reference: https://github.com/rany2/edge-tts
+// wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1
+// ?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=<UUID>
+
+const EDGE_TOKEN  = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+const EDGE_WS_URL = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${EDGE_TOKEN}`;
+
+function mkConnectionId() {
+  return "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".replace(/x/g, () =>
+    Math.floor(Math.random() * 16).toString(16)
+  );
+}
+
+function isoNow() {
+  return new Date().toISOString();
+}
+
+function edgeConfigMsg() {
+  return (
+    `X-Timestamp:${isoNow()}\r\n` +
+    `Content-Type:application/json; charset=utf-8\r\n` +
+    `Path:speech.config\r\n\r\n` +
+    JSON.stringify({
+      context: {
+        synthesis: {
+          audio: {
+            metadataoptions: {
+              sentenceBoundaryEnabled: "false",
+              wordBoundaryEnabled:     "true",
+            },
+            outputFormat: "audio-24khz-48kbitrate-mono-mp3",
+          },
+        },
+      },
+    })
+  );
+}
+
+function edgeSsmlMsg(requestId, voiceName, text, speedRate) {
+  // Convert numeric speed (1.0) to Edge TTS prosody rate (+0%, +50%, -25%, etc.)
+  const pct = Math.round((speedRate - 1) * 100);
+  const rateStr = (pct >= 0 ? "+" : "") + pct + "%";
+  const ssml = [
+    `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>`,
+    `<voice name='${voiceName}'>`,
+    `<prosody rate='${rateStr}'>${escapeXml(text)}</prosody>`,
+    `</voice></speak>`,
+  ].join("");
+
+  return (
+    `X-RequestId:${requestId}\r\n` +
+    `Content-Type:application/ssml+xml\r\n` +
+    `X-Timestamp:${isoNow()}\r\n` +
+    `Path:ssml\r\n\r\n` +
+    ssml
+  );
+}
+
+function escapeXml(str) {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+// Synthesise a single chunk via Edge TTS WebSocket; resolves with MP3 Blob
+function edgeTTSChunk(voiceName, text, speedRate) {
+  return new Promise((resolve, reject) => {
+    const connectionId = mkConnectionId();
+    const requestId    = mkConnectionId();
+    const wsUrl        = `${EDGE_WS_URL}&ConnectionId=${connectionId}`;
+
+    let ws;
+    try {
+      ws = new WebSocket(wsUrl);
+    } catch (err) {
+      return reject(err);
+    }
+
+    ws.binaryType = "arraybuffer";
+
+    const audioChunks = [];
+    let   turnDone    = false;
+    const timeout     = setTimeout(() => {
+      ws.close();
+      reject(new Error("Edge TTS timeout"));
+    }, 30000);
+
+    ws.onopen = () => {
+      ws.send(edgeConfigMsg());
+      ws.send(edgeSsmlMsg(requestId, voiceName, text, speedRate));
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === "string") {
+        // Text frame — check for turn.end
+        if (event.data.includes("Path:turn.end")) {
+          turnDone = true;
+          ws.close();
+        }
+      } else {
+        // Binary frame — audio data
+        // Format: [2-byte header length][header text][audio bytes]
+        const buf        = event.data;
+        const view       = new DataView(buf);
+        const headerLen  = view.getUint16(0); // big-endian
+        const header     = new TextDecoder().decode(new Uint8Array(buf, 2, headerLen));
+
+        if (header.includes("Path:audio")) {
+          const audioData = buf.slice(2 + headerLen);
+          audioChunks.push(audioData);
+        }
+      }
+    };
+
+    ws.onclose = () => {
+      clearTimeout(timeout);
+      if (audioChunks.length === 0 && !turnDone) {
+        reject(new Error("Edge TTS: no audio received"));
+        return;
+      }
+      // Merge ArrayBuffers into a single Blob
+      const blob = new Blob(audioChunks, { type: "audio/mpeg" });
+      resolve(blob);
+    };
+
+    ws.onerror = (err) => {
+      clearTimeout(timeout);
+      reject(new Error("Edge TTS WebSocket error"));
+    };
+  });
+}
+
+async function speakWithEdgeTTS(text, voiceName, speed) {
+  const voice  = voiceName || "en-GB-SoniaNeural";
+  const spd    = speed || 1.0;
+  const chunks = splitText(text, 900); // Edge TTS works best with ~800-1000 char chunks
 
   for (let i = 0; i < chunks.length; i++) {
     if (isStopped) return;
-
-    // Wait while paused (between chunks)
-    while (isPaused && !isStopped) {
-      await sleep(100);
-    }
+    while (isPaused && !isStopped) { await sleep(100); }
     if (isStopped) return;
 
-    reportState("playing", `Reading chunk ${i + 1}/${chunks.length}…`);
+    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+      chunk: i + 1, totalChunks: chunks.length, engine: "edge",
+    });
 
     try {
-      const response = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${voice}`,
-        {
-          method: "POST",
-          headers: {
-            Accept: "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": effectiveKey,
-          },
-          body: JSON.stringify({
-            text: chunks[i],
-            model_id: "eleven_monolingual_v1",
-            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
-          }),
-        }
-      );
+      const blob = await edgeTTSChunk(voice, chunks[i], spd);
+      if (isStopped) return;
 
-      if (!response.ok) {
-        throw new Error(`ElevenLabs API error: ${response.status} ${response.statusText}`);
-      }
+      await playAudioBlob(blob);
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-
-      // Play audio — resolves when chunk finishes (or rejects on error)
-      await new Promise((resolve, reject) => {
-        if (isStopped) { URL.revokeObjectURL(url); resolve(); return; }
-
-        const audio = new Audio(url);
-        currentAudio = audio;
-
-        audio.onended = () => {
-          URL.revokeObjectURL(url);
-          currentAudio = null;
-          resolve();
-        };
-        audio.onerror = () => {
-          URL.revokeObjectURL(url);
-          currentAudio = null;
-          reject(new Error("Audio element playback error"));
-        };
-        audio.play().catch(reject);
-      });
-
-      // If paused just after this chunk ended, wait before fetching the next
-      while (isPaused && !isStopped) {
-        await sleep(100);
-      }
+      while (isPaused && !isStopped) { await sleep(100); }
     } catch (err) {
       if (!isStopped) {
-        reportState("stopped", `Error: ${err.message}`);
+        reportState("stopped", `Edge TTS error: ${err.message}`);
       }
       return;
     }
   }
 
   if (!isStopped) {
-    reportState("stopped", "Finished");
+    reportState("stopped", "Finished ✓");
   }
 }
 
-// ─── Local TTS Playback ───────────────────────────────────────────────────────
+// ─── OpenAI TTS ───────────────────────────────────────────────────────────────
+
+async function speakWithOpenAI(text, voice, speed, apiKey) {
+  if (!apiKey || !apiKey.trim()) {
+    reportState("stopped", "OpenAI API key required — add it in Settings");
+    return;
+  }
+
+  const effectiveVoice = voice || "nova";
+  const chunks         = splitText(text, 4000);
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (isStopped) return;
+    while (isPaused && !isStopped) { await sleep(100); }
+    if (isStopped) return;
+
+    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+      chunk: i + 1, totalChunks: chunks.length, engine: "openai",
+    });
+
+    try {
+      const res = await fetch("https://api.openai.com/v1/audio/speech", {
+        method:  "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey.trim()}`,
+          "Content-Type":  "application/json",
+        },
+        body: JSON.stringify({
+          model: "tts-1",
+          input: chunks[i],
+          voice: effectiveVoice,
+          speed: Math.min(4.0, Math.max(0.25, speed || 1.0)),
+        }),
+      });
+
+      if (!res.ok) {
+        const msg = await res.text().catch(() => res.statusText);
+        throw new Error(`OpenAI API ${res.status}: ${msg}`);
+      }
+
+      const blob = await res.blob();
+      if (isStopped) return;
+
+      await playAudioBlob(blob);
+
+      while (isPaused && !isStopped) { await sleep(100); }
+    } catch (err) {
+      if (!isStopped) {
+        reportState("stopped", `OpenAI TTS error: ${err.message}`);
+      }
+      return;
+    }
+  }
+
+  if (!isStopped) {
+    reportState("stopped", "Finished ✓");
+  }
+}
+
+// ─── ElevenLabs TTS ───────────────────────────────────────────────────────────
+
+async function speakWithElevenLabs(text, voice, apiKey) {
+  const effectiveKey   = (apiKey && apiKey.trim()) || DEFAULT_ELEVENLABS_KEY;
+  const effectiveVoice = voice || "21m00Tcm4TlvDq8ikWAM"; // Rachel
+  const chunks         = splitText(text, 2500);
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (isStopped) return;
+    while (isPaused && !isStopped) { await sleep(100); }
+    if (isStopped) return;
+
+    reportState("playing", `Reading… ${i + 1}/${chunks.length}`, {
+      chunk: i + 1, totalChunks: chunks.length, engine: "elevenlabs",
+    });
+
+    try {
+      const res = await fetch(
+        `https://api.elevenlabs.io/v1/text-to-speech/${effectiveVoice}`,
+        {
+          method:  "POST",
+          headers: {
+            Accept:           "audio/mpeg",
+            "Content-Type":   "application/json",
+            "xi-api-key":     effectiveKey,
+          },
+          body: JSON.stringify({
+            text:           chunks[i],
+            model_id:       "eleven_monolingual_v1",
+            voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(`ElevenLabs API ${res.status}: ${res.statusText}`);
+      }
+
+      const blob = await res.blob();
+      if (isStopped) return;
+
+      await playAudioBlob(blob);
+
+      while (isPaused && !isStopped) { await sleep(100); }
+    } catch (err) {
+      if (!isStopped) {
+        reportState("stopped", `ElevenLabs error: ${err.message}`);
+      }
+      return;
+    }
+  }
+
+  if (!isStopped) {
+    reportState("stopped", "Finished ✓");
+  }
+}
+
+// ─── Browser Local TTS ────────────────────────────────────────────────────────
 
 function speakWithLocalTTS(text, voiceName, speed) {
   if (typeof speechSynthesis === "undefined") {
-    reportState("stopped", "Speech synthesis not available in this context");
+    reportState("stopped", "Speech synthesis unavailable");
     return;
   }
 
   speechSynthesis.cancel();
 
   const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-  let index = 0;
+  let   index     = 0;
 
-  reportState("playing", "Reading…");
+  reportState("playing", "Reading…", {
+    chunk: 1, totalChunks: sentences.length, engine: "local",
+  });
 
   function speakNext() {
     if (isStopped) return;
     if (index >= sentences.length) {
-      reportState("stopped", "Finished");
+      reportState("stopped", "Finished ✓");
       return;
     }
 
-    const utterance = new SpeechSynthesisUtterance(sentences[index]);
-    utterance.rate = speed || 1.0;
+    const utterance  = new SpeechSynthesisUtterance(sentences[index]);
+    utterance.rate   = speed || 1.0;
 
     if (voiceName) {
       const voices = speechSynthesis.getVoices();
-      const match = voices.find((v) => v.name === voiceName);
+      const match  = voices.find((v) => v.name === voiceName);
       if (match) utterance.voice = match;
     }
 
     utterance.onend = () => {
       index++;
-      speakNext();
-    };
-    utterance.onerror = (e) => {
       if (!isStopped) {
+        reportState("playing", `Reading…`, {
+          chunk: Math.min(index + 1, sentences.length),
+          totalChunks: sentences.length,
+          engine: "local",
+        });
+        speakNext();
+      }
+    };
+
+    utterance.onerror = (e) => {
+      if (!isStopped && e.error !== "interrupted") {
         reportState("stopped", `Speech error: ${e.error}`);
       }
     };
@@ -224,23 +458,32 @@ function speakWithLocalTTS(text, voiceName, speed) {
   speakNext();
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Text Splitter ────────────────────────────────────────────────────────────
 
 function splitText(text, maxLen) {
-  const chunks = [];
-  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
-  let chunk = "";
+  const chunks    = [];
+  const sentences = text.match(/[^.!?]+[.!?]+[\s]*/g) || [text];
+  let   chunk     = "";
+
   for (const s of sentences) {
-    if ((chunk + s).length > maxLen) {
+    if (s.length > maxLen) {
+      // Very long sentence: split by commas or just cut hard
+      if (chunk) { chunks.push(chunk.trim()); chunk = ""; }
+      const parts = s.match(new RegExp(`.{1,${maxLen}}`, "g")) || [s];
+      parts.forEach((p) => chunks.push(p.trim()));
+    } else if ((chunk + s).length > maxLen) {
       if (chunk) chunks.push(chunk.trim());
       chunk = s;
     } else {
       chunk += s;
     }
   }
-  if (chunk) chunks.push(chunk.trim());
-  return chunks;
+
+  if (chunk.trim()) chunks.push(chunk.trim());
+  return chunks.filter(Boolean);
 }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));

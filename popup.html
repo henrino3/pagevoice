@@ -1,53 +1,100 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div class="container">
-    <h1>🔊 Article Reader</h1>
-    
-    <div class="settings">
-      <label>
-        <input type="radio" name="tts" value="local" id="ttsLocal" checked>
-        Local TTS
-      </label>
-      <label>
-        <input type="radio" name="tts" value="elevenlabs" id="ttsElevenlabs">
-        ElevenLabs
-      </label>
+
+  <!-- ─── Player View (default) ─────────────────────────────────────────── -->
+  <div id="player-view" class="view active">
+    <div class="header">
+      <span class="app-title">🔊 PageVoice</span>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
     </div>
 
-    <div id="elevenLabsSettings" style="display: none;">
-      <input type="text" id="apiKey" placeholder="Paste ElevenLabs API Key here" />
-      <select id="elevenVoice">
-        <option value="EXAVITQu4vr4xnSDxMaL">Sarah (default)</option>
-        <option value="21m00Tcm4TlvDq8ikWAM">Rachel</option>
-        <option value="AZnzlk1XvdvUeBnXmlld">Domi</option>
-        <option value="pNInz6obpgDQGcFmaJgB">Adam</option>
-      </select>
-    </div>
-
-    <div id="localSettings">
-      <select id="localVoice">
-        <option value="">Select Voice...</option>
-      </select>
-      <label>
-        Speed: <input type="range" id="speed" min="0.5" max="2" step="0.1" value="1">
-        <span id="speedValue">1.0x</span>
-      </label>
+    <div class="article-card">
+      <div id="articleTitle" class="article-title">Press ▶ to read this page</div>
+      <div class="article-meta">
+        <span id="progressInfo" class="progress-info"></span>
+        <span id="engineLabel" class="engine-label">Edge TTS</span>
+      </div>
     </div>
 
     <div class="controls">
-      <button id="playBtn">▶️ Read</button>
-      <button id="pauseBtn" disabled>⏸️ Pause</button>
-      <button id="stopBtn" disabled>⏹️ Stop</button>
+      <button id="playBtn" class="ctrl-btn play-btn" title="Play">▶</button>
+      <button id="pauseBtn" class="ctrl-btn" title="Pause" disabled>⏸</button>
+      <button id="stopBtn" class="ctrl-btn stop-btn" title="Stop" disabled>⏹</button>
     </div>
 
-    <div id="status"></div>
+    <div id="status" class="status-bar"></div>
   </div>
-  
+
+  <!-- ─── Settings View ─────────────────────────────────────────────────── -->
+  <div id="settings-view" class="view">
+    <div class="header">
+      <button id="backBtn" class="icon-btn" title="Back">←</button>
+      <span class="app-title">Settings</span>
+    </div>
+
+    <div class="settings-content">
+
+      <!-- Engine Selector -->
+      <div class="setting-group">
+        <div class="setting-label">TTS Engine</div>
+        <div class="engine-options">
+          <label class="engine-option">
+            <input type="radio" name="engine" value="edge" id="engineEdge">
+            <span class="engine-name">Edge TTS <em class="badge free">free</em></span>
+          </label>
+          <label class="engine-option">
+            <input type="radio" name="engine" value="local" id="engineLocal">
+            <span class="engine-name">Browser Local</span>
+          </label>
+          <label class="engine-option">
+            <input type="radio" name="engine" value="openai" id="engineOpenAI">
+            <span class="engine-name">OpenAI TTS</span>
+          </label>
+          <label class="engine-option">
+            <input type="radio" name="engine" value="elevenlabs" id="engineElevenLabs">
+            <span class="engine-name">ElevenLabs</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Voice Picker -->
+      <div class="setting-group">
+        <div class="setting-label">Voice</div>
+        <select id="voiceSelect" class="styled-select"></select>
+      </div>
+
+      <!-- Speed -->
+      <div class="setting-group">
+        <div class="setting-label">Speed: <span id="speedValue">1.0x</span></div>
+        <input type="range" id="speedInput" min="0.5" max="2" step="0.1" value="1" class="speed-slider">
+      </div>
+
+      <!-- OpenAI API Key -->
+      <div id="openaiKeyGroup" class="setting-group api-key-group">
+        <div class="setting-label">OpenAI API Key</div>
+        <div class="key-input-wrap">
+          <input type="password" id="openaiKey" placeholder="sk-..." class="key-input" autocomplete="off">
+          <span id="openaiSaved" class="saved-indicator">Saved ✓</span>
+        </div>
+      </div>
+
+      <!-- ElevenLabs API Key -->
+      <div id="elevenKeyGroup" class="setting-group api-key-group">
+        <div class="setting-label">ElevenLabs API Key</div>
+        <div class="key-input-wrap">
+          <input type="password" id="elevenKey" placeholder="sk-..." class="key-input" autocomplete="off">
+          <span id="elevenSaved" class="saved-indicator">Saved ✓</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

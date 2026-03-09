@@ -1,25 +1,25 @@
 /**
- * background.js — PageVoice Service Worker
+ * background.js — PageVoice Service Worker (v2)
  *
  * Responsibilities:
- *  1. Maintain authoritative playback state (persisted in chrome.storage.session
- *     so it survives service-worker restarts within the same browser session).
- *  2. Manage the offscreen document lifecycle.
- *  3. Route messages between popup.js ↔ offscreen.js.
+ *  1. Maintain authoritative playback state in chrome.storage.session.
+ *  2. Manage offscreen document lifecycle.
+ *  3. Route messages: popup ↔ offscreen ↔ content-script (floating player).
  *
- * Message protocol (all messages carry a `target` field):
- *   From popup     → background  (target: 'background'): getState | play | pause | resume | stop
- *   From offscreen → background  (target: 'background'): stateUpdate
- *   From background → offscreen  (target: 'offscreen'):  play | pause | resume | stop | getState
- *   From background → popup      (target: 'popup'):      stateUpdate
+ * Message protocol (all messages carry `target`):
+ *   popup     → background: getState | play | pause | resume | stop
+ *   offscreen → background: stateUpdate { state, statusText, chunk, totalChunks, engine }
+ *   background → offscreen: play | pause | resume | stop
+ *   background → popup:     stateUpdate
+ *   background → content:   playerUpdate { state, chunk, totalChunks }
  */
 
 const OFFSCREEN_URL = chrome.runtime.getURL("offscreen.html");
 
-// ─── State ────────────────────────────────────────────────────────────────────
+// ─── State ─────────────────────────────────────────────────────────────────────
 
-/** In-memory snapshot; authoritative copy lives in chrome.storage.session */
-let _state = { state: "stopped", statusText: "" };
+let _state = { state: "stopped", statusText: "", chunk: 0, totalChunks: 0, engine: "edge" };
+let _activeTabId = null;
 
 async function loadState() {
   const stored = await chrome.storage.session.get("playbackState").catch(() => ({}));
@@ -33,7 +33,7 @@ async function saveState(patch) {
   return _state;
 }
 
-// ─── Offscreen Document Helpers ───────────────────────────────────────────────
+// ─── Offscreen Helpers ─────────────────────────────────────────────────────────
 
 async function hasOffscreenDocument() {
   const contexts = await chrome.runtime.getContexts({
@@ -44,15 +44,13 @@ async function hasOffscreenDocument() {
 }
 
 async function ensureOffscreenDocument() {
-  if (await hasOffscreenDocument()) return false; // already exists
+  if (await hasOffscreenDocument()) return;
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_URL,
     reasons: ["AUDIO_PLAYBACK"],
-    justification: "Persistent TTS audio playback that survives popup close",
+    justification: "Persistent TTS audio that survives popup close",
   });
-  // Give the document a moment to load its script before we send messages
   await sleep(150);
-  return true; // freshly created
 }
 
 async function closeOffscreenDocument() {
@@ -61,91 +59,108 @@ async function closeOffscreenDocument() {
   }
 }
 
-// ─── Message Router ───────────────────────────────────────────────────────────
+// ─── Content Script Notifications ─────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+function notifyContentScript(tabId, payload) {
+  if (!tabId) return;
+  chrome.tabs.sendMessage(tabId, { target: "content", type: "playerUpdate", payload }).catch(() => {});
+}
+
+// ─── Message Router ────────────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target !== "background") return false;
 
   (async () => {
     switch (message.type) {
 
-      // ── Popup requests current state ──────────────────────────────────────
+      // ── Get current state ────────────────────────────────────────────────
       case "getState": {
         const st = await loadState();
-
-        // If state says playing/paused but no offscreen doc exists, it's stale
+        // If state says active but no offscreen exists, it's stale
         if (st.state !== "stopped" && !(await hasOffscreenDocument())) {
-          await saveState({ state: "stopped", statusText: "" });
+          await saveState({ state: "stopped", statusText: "", chunk: 0, totalChunks: 0 });
         }
-
         sendResponse({ ok: true, payload: await loadState() });
         break;
       }
 
-      // ── Popup requests playback start ─────────────────────────────────────
+      // ── Start playback ───────────────────────────────────────────────────
       case "play": {
-        await saveState({ state: "playing", statusText: "Starting…" });
+        if (message.payload?.tabId) {
+          _activeTabId = message.payload.tabId;
+        }
+        await saveState({ state: "playing", statusText: "Starting…", engine: message.payload?.engine || "edge" });
         await ensureOffscreenDocument();
-        // Forward full play payload to offscreen
         chrome.runtime.sendMessage({
           target: "offscreen",
           type: "play",
           payload: message.payload,
         }).catch(() => {});
+        // Notify content script to show mini-player
+        notifyContentScript(_activeTabId, { state: "playing", chunk: 0, totalChunks: 0 });
         sendResponse({ ok: true });
         break;
       }
 
-      // ── Popup requests pause ──────────────────────────────────────────────
+      // ── Pause ────────────────────────────────────────────────────────────
       case "pause": {
         await saveState({ state: "paused", statusText: "Paused" });
         chrome.runtime.sendMessage({ target: "offscreen", type: "pause" }).catch(() => {});
+        notifyContentScript(_activeTabId, { state: "paused", chunk: _state.chunk, totalChunks: _state.totalChunks });
         sendResponse({ ok: true });
         break;
       }
 
-      // ── Popup requests resume ─────────────────────────────────────────────
+      // ── Resume ───────────────────────────────────────────────────────────
       case "resume": {
-        await saveState({ state: "playing", statusText: _state.statusText || "Resuming…" });
+        await saveState({ state: "playing", statusText: _state.statusText });
         chrome.runtime.sendMessage({ target: "offscreen", type: "resume" }).catch(() => {});
+        notifyContentScript(_activeTabId, { state: "playing", chunk: _state.chunk, totalChunks: _state.totalChunks });
         sendResponse({ ok: true });
         break;
       }
 
-      // ── Popup requests stop ───────────────────────────────────────────────
+      // ── Stop ─────────────────────────────────────────────────────────────
       case "stop": {
-        await saveState({ state: "stopped", statusText: "" });
+        await saveState({ state: "stopped", statusText: "", chunk: 0, totalChunks: 0 });
         chrome.runtime.sendMessage({ target: "offscreen", type: "stop" }).catch(() => {});
-        // Small delay to let offscreen handle the stop before we tear it down
-        await sleep(200);
+        notifyContentScript(_activeTabId, { state: "stopped" });
+        await sleep(250);
         await closeOffscreenDocument();
         sendResponse({ ok: true });
         break;
       }
 
-      // ── Offscreen reports state change ────────────────────────────────────
+      // ── State update from offscreen ──────────────────────────────────────
       case "stateUpdate": {
         const updated = await saveState(message.payload);
 
-        // Auto-close offscreen when playback finishes naturally
         if (updated.state === "stopped") {
           await sleep(100);
           await closeOffscreenDocument();
         }
 
-        // Forward to popup if it happens to be open
+        // Forward to popup (if open)
         chrome.runtime.sendMessage({
           target: "popup",
           type: "stateUpdate",
           payload: updated,
         }).catch(() => {});
 
+        // Forward to content script (floating player)
+        notifyContentScript(_activeTabId, {
+          state:       updated.state,
+          chunk:       updated.chunk || 0,
+          totalChunks: updated.totalChunks || 0,
+        });
+
         sendResponse({ ok: true });
         break;
       }
 
       default:
-        sendResponse({ ok: false, error: "Unknown message type" });
+        sendResponse({ ok: false, error: "Unknown message type: " + message.type });
     }
   })();
 

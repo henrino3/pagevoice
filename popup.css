@@ -1,0 +1,328 @@
+/* ═══════════════════════════════════════════════════════════════
+   PageVoice Popup — Dark Theme
+   ═══════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  width: 300px;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #111;
+  color: #e8e8e8;
+  overflow: hidden;
+}
+
+/* ─── Views ───────────────────────────────────────────────────── */
+
+.view {
+  width: 300px;
+  padding: 14px;
+  display: none;
+  flex-direction: column;
+  gap: 14px;
+  animation: fadeSlideIn 0.18s ease;
+}
+
+.view.active {
+  display: flex;
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateX(6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ─── Header ──────────────────────────────────────────────────── */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.app-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  color: #ddd;
+  background: #2a2a2a;
+}
+
+/* ─── Article Card ────────────────────────────────────────────── */
+
+.article-card {
+  background: #1c1c1c;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 56px;
+}
+
+.article-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: #ccc;
+  line-height: 1.4;
+  max-height: 36px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.article-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.progress-info {
+  font-size: 11px;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+
+.engine-label {
+  font-size: 10px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: #222;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* ─── Transport Controls ──────────────────────────────────────── */
+
+.controls {
+  display: flex;
+  gap: 8px;
+}
+
+.ctrl-btn {
+  flex: 1;
+  padding: 11px;
+  background: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 8px;
+  color: #bbb;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  line-height: 1;
+}
+
+.ctrl-btn:hover:not(:disabled) {
+  background: #2a2a2a;
+  border-color: #444;
+  color: #fff;
+}
+
+.play-btn:hover:not(:disabled) {
+  background: #0052cc;
+  border-color: #0066ff;
+  color: #fff;
+}
+
+.ctrl-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Active play state */
+.play-btn.active {
+  background: #003d99;
+  border-color: #0052cc;
+  color: #fff;
+}
+
+/* ─── Status Bar ──────────────────────────────────────────────── */
+
+.status-bar {
+  font-size: 11px;
+  color: #666;
+  min-height: 16px;
+  text-align: center;
+  transition: color 0.2s;
+}
+
+.status-bar.error {
+  color: #e05555;
+}
+
+/* ─── Settings Content ────────────────────────────────────────── */
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.setting-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Engine Radio Group */
+.engine-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.engine-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  background: #1c1c1c;
+  border: 1px solid #2a2a2a;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.engine-option:hover {
+  background: #222;
+  border-color: #333;
+}
+
+.engine-option input[type="radio"] {
+  accent-color: #0066ff;
+  margin: 0;
+}
+
+.engine-option input[type="radio"]:checked + .engine-name {
+  color: #fff;
+}
+
+.engine-name {
+  font-size: 13px;
+  color: #aaa;
+}
+
+.badge {
+  font-size: 9px;
+  font-style: normal;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 4px;
+}
+
+.badge.free {
+  background: #0a3a1a;
+  color: #3fc87a;
+  border: 1px solid #1a5c32;
+}
+
+/* Voice Select */
+.styled-select {
+  width: 100%;
+  padding: 8px 10px;
+  background: #1c1c1c;
+  border: 1px solid #333;
+  border-radius: 7px;
+  color: #ddd;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23666'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+
+.styled-select:focus {
+  border-color: #0066ff;
+}
+
+.styled-select option {
+  background: #1c1c1c;
+}
+
+/* Speed Slider */
+.speed-slider {
+  width: 100%;
+  accent-color: #0066ff;
+  height: 4px;
+}
+
+/* API Key inputs */
+.api-key-group {
+  display: none; /* shown via JS based on engine */
+}
+
+.key-input-wrap {
+  position: relative;
+}
+
+.key-input {
+  width: 100%;
+  padding: 8px 10px;
+  padding-right: 68px;
+  background: #1c1c1c;
+  border: 1px solid #333;
+  border-radius: 7px;
+  color: #ddd;
+  font-size: 13px;
+  outline: none;
+}
+
+.key-input:focus {
+  border-color: #0066ff;
+}
+
+.key-input::placeholder {
+  color: #444;
+}
+
+.saved-indicator {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  font-weight: 600;
+  color: #3fc87a;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+.saved-indicator.show {
+  opacity: 1;
+}
