@@ -271,7 +271,7 @@ function loadLocalVoices(savedVoice) {
       curated.forEach(({ value, label }) => addOption(voiceSelect, value, label));
     }
     restoreVoice(savedVoice);
-    voiceSelect.onchange(); // persist if needed
+    voiceSelect.dispatchEvent(new Event("change")); // persist if needed
   };
 
   if (speechSynthesis.getVoices().length > 0) {
