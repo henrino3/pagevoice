@@ -7,6 +7,7 @@
   "host_permissions": [
     "https://api.elevenlabs.io/*",
     "https://api.openai.com/*",
+    "https://api.streamelements.com/*",
     "https://speech.platform.bing.com/*"
   ],
   "action": {

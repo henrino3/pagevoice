@@ -2,7 +2,7 @@
  * offscreen.js — PageVoice Offscreen Document (v2)
  *
  * Handles ALL audio playback:
- *   - Edge TTS  (free, WebSocket, default)
+ *   - Edge TTS  (free, StreamElements fetch + Bing fallback, default)
  *   - OpenAI TTS (API key, REST)
  *   - ElevenLabs  (API key, REST)
  *   - Browser Local TTS (SpeechSynthesis)
@@ -93,11 +93,15 @@ function reportState(state, statusText, extra = {}) {
 
 // ─── Shared audio player ──────────────────────────────────────────────────────
 
-function playAudioBlob(blob) {
+function playAudioBlob(blob, playbackRate = 1.0) {
   return new Promise((resolve, reject) => {
     if (isStopped) { resolve(); return; }
-    const url   = URL.createObjectURL(blob);
-    const audio = new Audio(url);
+    const url      = URL.createObjectURL(blob);
+    const audio    = new Audio(url);
+    const safeRate = Math.min(4.0, Math.max(0.25, playbackRate || 1.0));
+
+    audio.defaultPlaybackRate = safeRate;
+    audio.playbackRate        = safeRate;
     currentAudio = audio;
 
     audio.onended = () => {
@@ -114,14 +118,29 @@ function playAudioBlob(blob) {
   });
 }
 
-// ─── Edge TTS (WebSocket) ─────────────────────────────────────────────────────
+// ─── Edge TTS (StreamElements primary, Bing fallback) ────────────────────────
 //
-// Protocol reference: https://github.com/rany2/edge-tts
+// Primary: https://api.streamelements.com/kappa/v2/speech
+// Fallback protocol reference: https://github.com/rany2/edge-tts
 // wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1
 // ?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=<UUID>
 
 const EDGE_TOKEN  = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_WS_URL = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${EDGE_TOKEN}`;
+const STREAMELEMENTS_TTS_URL = "https://api.streamelements.com/kappa/v2/speech";
+const EDGE_STREAMELEMENTS_VOICE_MAP = {
+  "en-GB-SoniaNeural":   "Amy",
+  "en-GB-RyanNeural":    "Brian",
+  "en-US-JennyNeural":   "Joanna",
+  "en-US-GuyNeural":     "Matthew",
+  "en-AU-NatashaNeural": "Nicole",
+  "en-AU-WilliamNeural": "Russell",
+  "en-US-AriaNeural":    "Joanna",
+};
+
+function getStreamElementsVoice(voiceName) {
+  return EDGE_STREAMELEMENTS_VOICE_MAP[voiceName] || "Amy";
+}
 
 function mkConnectionId() {
   return "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx".replace(/x/g, () =>
@@ -183,8 +202,28 @@ function escapeXml(str) {
     .replace(/'/g, "&apos;");
 }
 
+// Synthesise a single chunk via StreamElements; resolves with MP3 Blob
+async function edgeTTSChunk(voiceName, text) {
+  const url = new URL(STREAMELEMENTS_TTS_URL);
+  url.searchParams.set("voice", getStreamElementsVoice(voiceName));
+  url.searchParams.set("text", text);
+
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(`StreamElements API ${res.status}: ${msg || res.statusText}`);
+  }
+
+  const blob = await res.blob();
+  if (!blob.size) {
+    throw new Error("StreamElements returned empty audio");
+  }
+
+  return blob;
+}
+
 // Synthesise a single chunk via Edge TTS WebSocket; resolves with MP3 Blob
-function edgeTTSChunk(voiceName, text, speedRate) {
+function edgeTTSChunkViaBing(voiceName, text, speedRate) {
   return new Promise((resolve, reject) => {
     const connectionId = mkConnectionId();
     const requestId    = mkConnectionId();
@@ -266,15 +305,29 @@ async function speakWithEdgeTTS(text, voiceName, speed) {
     });
 
     try {
-      const blob = await edgeTTSChunk(voice, chunks[i], spd);
+      const blob = await edgeTTSChunk(voice, chunks[i]);
       if (isStopped) return;
 
-      await playAudioBlob(blob);
+      await playAudioBlob(blob, spd);
 
       while (isPaused && !isStopped) { await sleep(100); }
-    } catch (err) {
-      if (!isStopped) {
-        reportState("stopped", `Edge TTS error: ${err.message}`);
+    } catch (streamErr) {
+      try {
+        const blob = await edgeTTSChunkViaBing(voice, chunks[i], spd);
+        if (isStopped) return;
+
+        await playAudioBlob(blob);
+
+        while (isPaused && !isStopped) { await sleep(100); }
+      } catch (bingErr) {
+        if (!isStopped) {
+          reportState("playing", "Network TTS unavailable, switching to Browser TTS…", {
+            chunk: i + 1,
+            totalChunks: chunks.length,
+            engine: "local",
+          });
+          speakWithLocalTTS(chunks.slice(i).join(" "), null, spd);
+        }
       }
       return;
     }

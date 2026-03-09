@@ -14,13 +14,13 @@ const DEFAULT_ELEVENLABS_KEY = "sk_1762efa9c9a67a671fd67ab38648f0512634c43c126a4
 // ─── Curated voice tables ─────────────────────────────────────────────────────
 
 const EDGE_VOICES = [
-  { value: "en-GB-SoniaNeural",   label: "Sonia (British Female)" },
-  { value: "en-GB-RyanNeural",    label: "Ryan (British Male)" },
-  { value: "en-US-JennyNeural",   label: "Jenny (US Female)" },
-  { value: "en-US-GuyNeural",     label: "Guy (US Male)" },
-  { value: "en-US-AriaNeural",    label: "Aria (US Female, Conversational)" },
-  { value: "en-AU-NatashaNeural", label: "Natasha (AU Female)" },
-  { value: "en-AU-WilliamNeural", label: "William (AU Male)" },
+  { value: "en-GB-SoniaNeural",   label: "Amy (British Female)" },
+  { value: "en-GB-RyanNeural",    label: "Brian (British Male)" },
+  { value: "en-US-JennyNeural",   label: "Joanna (US Female)" },
+  { value: "en-US-GuyNeural",     label: "Matthew (US Male)" },
+  { value: "en-US-AriaNeural",    label: "Joanna (US Female, Conversational)" },
+  { value: "en-AU-NatashaNeural", label: "Nicole (AU Female)" },
+  { value: "en-AU-WilliamNeural", label: "Russell (AU Male)" },
 ];
 
 const OPENAI_VOICES = [
