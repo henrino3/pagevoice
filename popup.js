@@ -196,6 +196,8 @@ settingsBtn.addEventListener("click", () => {
 backBtn.addEventListener("click", () => {
   settingsView.classList.remove("active");
   playerView.classList.add("active");
+  // Always refresh engine label when returning to player view
+  engineLabel.textContent = engineDisplayName(currentEngine);
 });
 
 // ─── Engine Selection ─────────────────────────────────────────────────────────
@@ -292,13 +294,26 @@ speedInput.addEventListener("input", () => {
 
 // ─── API Keys ─────────────────────────────────────────────────────────────────
 
-openaiKeyInput.addEventListener("input", () => {
-  chrome.storage.sync.set({ openaiKey: openaiKeyInput.value }, () => flashSaved(openaiSaved));
-});
+// Handle both typing and pasting for key inputs
+function bindKeyInput(input, storageKey, savedIndicator) {
+  const save = () => {
+    chrome.storage.sync.set({ [storageKey]: input.value }, () => flashSaved(savedIndicator));
+  };
+  input.addEventListener("input", save);
+  input.addEventListener("paste", (e) => {
+    // Let the paste happen, then save after the value updates
+    setTimeout(save, 0);
+  });
+  // Also handle Ctrl+V / Cmd+V explicitly in case paste event is swallowed
+  input.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "v") {
+      setTimeout(save, 50);
+    }
+  });
+}
 
-elevenKeyInput.addEventListener("input", () => {
-  chrome.storage.sync.set({ elevenLabsKey: elevenKeyInput.value }, () => flashSaved(elevenSaved));
-});
+bindKeyInput(openaiKeyInput, "openaiKey", openaiSaved);
+bindKeyInput(elevenKeyInput, "elevenLabsKey", elevenSaved);
 
 function flashSaved(indicator) {
   indicator.classList.add("show");
@@ -384,7 +399,9 @@ function applyState({ state, statusText, chunk, totalChunks, engine }) {
   if (chunk !== undefined && totalChunks !== undefined) {
     progressInfo.textContent = totalChunks > 1 ? `${chunk} / ${totalChunks}` : "";
   }
-  if (engine) {
+  // Only update engine label from playback state if actively playing/paused
+  // Otherwise respect the user's selected engine from settings
+  if (engine && (state === "playing" || state === "paused")) {
     engineLabel.textContent = engineDisplayName(engine);
   }
 }
