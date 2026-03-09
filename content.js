@@ -4,12 +4,17 @@
  * Responsibilities:
  *  1. Extract article text and page title on request.
  *  2. Inject / update / remove the floating mini-player.
+ *
+ * Wrapped in IIFE to prevent redeclaration errors when injected
+ * both via manifest content_scripts and chrome.scripting.executeScript.
  */
+
+if (!window.__pagevoice_loaded__) {
+window.__pagevoice_loaded__ = true;
 
 // ─── Article Extraction ───────────────────────────────────────────────────────
 
 function extractArticleData() {
-  // Prefer visible paragraphs (most reliable signal of article content)
   const paragraphs = Array.from(document.querySelectorAll("p"))
     .map((p) => p.innerText.trim())
     .filter((t) => t.length > 30);
@@ -44,7 +49,6 @@ function extractArticleData() {
     }
   }
 
-  // Derive a clean title: prefer og:title, then h1, then document.title
   let title = "";
   const ogTitle = document.querySelector('meta[property="og:title"]');
   if (ogTitle) {
@@ -60,21 +64,18 @@ function extractArticleData() {
 // ─── Message Listener ─────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  // Article data request from popup
   if (request.action === "getArticleData") {
     const data = extractArticleData();
     sendResponse(data);
     return true;
   }
 
-  // Legacy support (in case something still sends getArticleText)
   if (request.action === "getArticleText") {
     const { text } = extractArticleData();
     sendResponse({ text });
     return true;
   }
 
-  // Floating player state update from background
   if (request.target === "content" && request.type === "playerUpdate") {
     handlePlayerUpdate(request.payload);
     return true;
@@ -103,7 +104,6 @@ function handlePlayerUpdate({ state, chunk, totalChunks }) {
 }
 
 function injectPlayer() {
-  // Avoid duplicates
   if (document.getElementById(PLAYER_ID)) {
     playerEl      = document.getElementById(PLAYER_ID);
     playerVisible = true;
@@ -127,7 +127,6 @@ function injectPlayer() {
   document.body.appendChild(playerEl);
   playerVisible = true;
 
-  // ── Event Listeners ──────────────────────────────────────────────────────
   playerEl.querySelector(".pv-play").addEventListener("click", (e) => {
     e.stopPropagation();
     chrome.runtime.sendMessage({ target: "background", type: "pause" });
@@ -144,7 +143,6 @@ function injectPlayer() {
     removePlayer();
   });
 
-  // Draggable
   playerEl.addEventListener("mousedown", onDragStart);
   document.addEventListener("mousemove", onDragMove);
   document.addEventListener("mouseup",   onDragEnd);
@@ -161,7 +159,6 @@ function updatePlayer(state, chunk, totalChunks) {
     playBtn.title       = "Resume";
     playerEl.classList.add("pv-paused");
     playerEl.classList.remove("pv-playing");
-    // override click to send resume
     playBtn.onclick = (e) => {
       e.stopPropagation();
       chrome.runtime.sendMessage({ target: "background", type: "resume" });
@@ -197,7 +194,6 @@ function removePlayer() {
 // ─── Drag Logic ───────────────────────────────────────────────────────────────
 
 function onDragStart(e) {
-  // Only drag from the handle or the player body (not buttons)
   if (e.target.classList.contains("pv-btn")) return;
   isDragging  = true;
   const rect  = playerEl.getBoundingClientRect();
@@ -212,7 +208,6 @@ function onDragMove(e) {
   const x = e.clientX - dragOffsetX;
   const y = e.clientY - dragOffsetY;
 
-  // Keep within viewport
   const maxX = window.innerWidth  - playerEl.offsetWidth;
   const maxY = window.innerHeight - playerEl.offsetHeight;
 
@@ -226,3 +221,7 @@ function onDragEnd() {
   isDragging = false;
   if (playerEl) playerEl.style.transition = "";
 }
+
+console.log("PageVoice content script loaded");
+
+} // end guard
