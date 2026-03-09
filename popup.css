@@ -310,6 +310,10 @@ body {
   color: #444;
 }
 
+.key-masked {
+  -webkit-text-security: disc;
+}
+
 .saved-indicator {
   position: absolute;
   right: 8px;
