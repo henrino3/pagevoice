@@ -9,7 +9,7 @@
  *   #settings-view — gear icon opens this; back arrow returns to player
  */
 
-const DEFAULT_ELEVENLABS_KEY = "sk_1762efa9c9a67a671fd67ab38648f0512634c43c126a44f3";
+const DEFAULT_ELEVENLABS_KEY = "";
 
 // ─── Curated voice tables ─────────────────────────────────────────────────────
 
